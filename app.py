@@ -51,7 +51,7 @@ def get_trip():
         min_lng = min(min_lng, item['lng'])
 
     # Apply the threshold of 5 meters
-    threshold = 0.000045  # Approximately 5 meters in latitude or longitude
+    threshold = 0.00045  # Approximately 5 meters in latitude or longitude
     max_lat += threshold
     min_lat -= threshold
     max_lng += threshold
@@ -64,7 +64,7 @@ def get_trip():
     ]
 
     # Assign in_path values
-    df['in_path'] = restricted_df.apply(lambda row: any(geodesic((row['lat'], row['long']), (coord['lat'], coord['lng'])).m <= 20 for coord in data), axis=1)
+    df['in_path'] = restricted_df.apply(lambda row: any(geodesic((row['lat'], row['long']), (coord['lat'], coord['lng'])).m <= 40 for coord in data), axis=1)
 
     # Filter the DataFrame to include only the rows in the path
     filtered_df = df.fillna({'in_path': False})
