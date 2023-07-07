@@ -3,6 +3,8 @@ from flask_cors import CORS
 import gcsfs
 import pandas as pd
 import pyarrow.parquet as pq
+import requests
+import json
 from geopy.distance import geodesic
 
 # instantiate the app
@@ -25,6 +27,24 @@ def get_counter():
     df = table.to_pandas()
 
     return df.to_json()
+
+@app.route('/test', methods=['GET'])
+def testCounter():
+    url = "https://us-east1-prediswiss.cloudfunctions.net/predict"
+
+    headers = {
+        'Content-Type': 'application/json'
+    }
+
+    payload = {
+        "id": 'CH:0119.01',
+        "time": 3600,
+        "store": False
+    }
+
+    response = requests.post(url, json=payload, headers=headers)
+
+    return response.text
 
 @app.route('/trip', methods=['POST'])
 def get_trip():
@@ -69,9 +89,26 @@ def get_trip():
     # Filter the DataFrame to include only the rows in the path
     filtered_df = df.fillna({'in_path': False})
     filtered_df = filtered_df[filtered_df['in_path'] == True]
-    
-    return filtered_df.to_json()
 
+    url = "https://us-east1-prediswiss.cloudfunctions.net/predict"
+    headers = {
+        'Content-Type': 'application/json'
+    }
+
+    for index, row in df.iterrows():
+        payload = {
+            "id": row['id'],
+            "time": 3600,
+            "store": False
+        }
+
+        response = requests.post(url, data=json.dumps(payload), headers=headers)
+        print(response.status_code)
+        print(response)
+
+        break
+    
+    return "ok"
 
 if __name__ == '__main__':
     app.run()
