@@ -4,8 +4,13 @@ import gcsfs
 import pandas as pd
 import pyarrow.parquet as pq
 import requests
-import json
 from geopy.distance import geodesic
+import asyncio
+import aiohttp
+import json
+
+
+# flask run --port=5001 --debug
 
 # instantiate the app
 app = Flask(__name__)
@@ -13,8 +18,6 @@ app.config.from_object(__name__)
 
 # enable CORS
 CORS(app, resources={r'/*': {'origins': '*'}})
-
-
 
 # sanity check route
 @app.route('/counter', methods=['GET'])
@@ -28,26 +31,8 @@ def get_counter():
 
     return df.to_json()
 
-@app.route('/test', methods=['GET'])
-def testCounter():
-    url = "https://us-east1-prediswiss.cloudfunctions.net/predict"
-
-    headers = {
-        'Content-Type': 'application/json'
-    }
-
-    payload = {
-        "id": 'CH:0119.01',
-        "time": 3600,
-        "store": False
-    }
-
-    response = requests.post(url, json=payload, headers=headers)
-
-    return response.text
-
 @app.route('/trip', methods=['POST'])
-def get_trip():
+async def get_trip():
     bucket_name = "prediswiss-network"
     file_name = "network.parquet"
     fs_gcs = gcsfs.GCSFileSystem()
@@ -60,11 +45,11 @@ def get_trip():
 
     data = request.json
 
-    max_lat = min_lat = data[0]['lat']
-    max_lng = min_lng = data[0]['lng']
+    max_lat = min_lat = data[0][0]['lat']
+    max_lng = min_lng = data[0][0]['lng']
 
     # Find the maximum and minimum values for latitude and longitude
-    for item in data:
+    for item in data[0]:
         max_lat = max(max_lat, item['lat'])
         min_lat = min(min_lat, item['lat'])
         max_lng = max(max_lng, item['lng'])
@@ -84,31 +69,41 @@ def get_trip():
     ]
 
     # Assign in_path values
-    df['in_path'] = restricted_df.apply(lambda row: any(geodesic((row['lat'], row['long']), (coord['lat'], coord['lng'])).m <= 40 for coord in data), axis=1)
+    df['in_path'] = restricted_df.apply(lambda row: any(geodesic((row['lat'], row['long']), (coord['lat'], coord['lng'])).m <= 40 for coord in data[0]), axis=1)
 
     # Filter the DataFrame to include only the rows in the path
     filtered_df = df.fillna({'in_path': False})
     filtered_df = filtered_df[filtered_df['in_path'] == True]
+
 
     url = "https://us-east1-prediswiss.cloudfunctions.net/predict"
     headers = {
         'Content-Type': 'application/json'
     }
 
-    for index, row in df.iterrows():
-        payload = {
-            "id": row['id'],
-            "time": 3600,
-            "store": False
-        }
+    responses = []
+    async with aiohttp.ClientSession() as session:
+        for index, row in filtered_df.iterrows():
+            payload = {
+                "id": row['id'],
+                "time": int(data[1]),
+                "store": False
+            }
+            response = asyncio.ensure_future(make_request(session, url, payload, headers))
+            responses.append(response)
+            
+        await asyncio.gather(*responses)
 
-        response = requests.post(url, data=json.dumps(payload), headers=headers)
-        print(response.status_code)
-        print(response)
+    responsesData = [pd.DataFrame(json.loads(response.result())) for response in responses]
 
-        break
-    
-    return "ok"
+    #need to fix sending other data (this send df en texte (fait tout peter))
+    return [[dataframe['yhat'].iloc[-1] for dataframe in responsesData], filtered_df.to_json()]
+
+async def make_request(session, url, payload, headers):
+    async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=540)) as response:
+        return await response.text()    
 
 if __name__ == '__main__':
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(asyncio.ensure_future(get_trip()))
     app.run()
