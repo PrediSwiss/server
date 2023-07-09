@@ -7,3 +7,4 @@ geopy
 asyncio
 aiohttp
 flask[async]
+google-cloud-storage

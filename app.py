@@ -8,6 +8,7 @@ from geopy.distance import geodesic
 import asyncio
 import aiohttp
 import json
+import xml.etree.ElementTree as ET
 
 
 # flask run --port=5001 --debug
@@ -31,8 +32,132 @@ def get_counter():
 
     return df.to_json()
 
+@app.route('/current', methods=['GET'])
+def get_current():
+    bucket_name = "prediswiss-raw-data"
+    fs_gcs = gcsfs.GCSFileSystem()
+    lastFolder = fs_gcs.ls(bucket_name)[-1]
+    lastFile = fs_gcs.ls(lastFolder)[-1]
+
+    content = None
+    with fs_gcs.open(lastFile, 'r') as file:
+        content = file.read()
+
+    namespaces = {
+        'ns0': 'http://schemas.xmlsoap.org/soap/envelope/',
+        'ns1': 'http://datex2.eu/schema/2/2_0',
+    }
+
+    dom = ET.fromstring(content)
+
+    publicationDate = dom.find(
+        './ns0:Body'
+        '/ns1:d2LogicalModel'
+        '/ns1:payloadPublication'
+        '/ns1:publicationTime',
+        namespaces
+    ).text
+
+    compteurs = dom.findall(
+        './ns0:Body'
+        '/ns1:d2LogicalModel'
+        '/ns1:payloadPublication'
+        '/ns1:siteMeasurements',
+        namespaces
+    )
+
+    flowTmp = [(compteur.find(
+        './ns1:measuredValue[@index="1"]'
+        '/ns1:measuredValue'
+        '/ns1:basicData'
+        '/ns1:vehicleFlow'
+        '/ns1:vehicleFlowRate',
+        namespaces
+    ), compteur.find(
+        './ns1:measuredValue[@index="11"]'
+        '/ns1:measuredValue'
+        '/ns1:basicData'
+        '/ns1:vehicleFlow'
+        '/ns1:vehicleFlowRate',
+        namespaces
+    ), compteur.find(
+        './ns1:measuredValue[@index="21"]'
+        '/ns1:measuredValue'
+        '/ns1:basicData'
+        '/ns1:vehicleFlow'
+        '/ns1:vehicleFlowRate',
+        namespaces
+    )) for compteur in compteurs]
+
+    speedTmp = [(compteur.find(
+        './ns1:measuredValue[@index="2"]'
+        '/ns1:measuredValue'
+        '/ns1:basicData'
+        '/ns1:averageVehicleSpeed'
+        '/ns1:speed',
+        namespaces
+    ), compteur.find(
+        './ns1:measuredValue[@index="12"]'
+        '/ns1:measuredValue'
+        '/ns1:basicData'
+        '/ns1:averageVehicleSpeed'
+        '/ns1:speed',
+        namespaces
+    ), compteur.find(
+        './ns1:measuredValue[@index="22"]'
+        '/ns1:measuredValue'
+        '/ns1:basicData'
+        '/ns1:averageVehicleSpeed'
+        '/ns1:speed',
+        namespaces
+    )) for compteur in compteurs]
+
+    speed = []
+    for sp in speedTmp:
+        speed.append((None if sp[0] == None or sp[0] == 0 else sp[0].text, None if sp[1] == None or sp[1] == 0 else sp[1].text, None if sp[2] == None or sp[2] == 0 else sp[2].text))
+
+    flow = []
+    for fl in flowTmp:
+        flow.append((None if fl[0] == None else fl[0].text, None if fl[1] == None else fl[1].text, None if fl[2] == None else fl[2].text))
+
+    compteursId = [comp.find('ns1:measurementSiteReference', namespaces).get("id") for comp in compteurs]
+
+    columns = ["publication_date", "id", "flow_1", "flow_11", "flow_21", "speed_2", "speed_12", "speed_22"]
+
+    data = [(publicationDate, compteursId[i], flow[i][0], flow[i][1], flow[i][2], speed[i][0], speed[i][1], speed[i][2]) for i in range(len(compteursId)) ]
+    dataframe = pd.DataFrame(data=data, columns=columns)
+
+    return dataframe.to_json()
+
+@app.route('/tripPredict', methods=['POST'])
+async def get_trip_predict():
+    data = request.json
+
+    url = "https://us-east1-prediswiss.cloudfunctions.net/predict"
+
+    headers = {
+        'Content-Type': 'application/json'
+    }
+
+    responses = []
+    async with aiohttp.ClientSession() as session:
+        for value in data[0].values():
+            payload = {
+                "id": value,
+                "time": int(data[1]),
+                "store": False
+            }
+            response = asyncio.ensure_future(make_request(session, url, payload, headers))
+            responses.append(response)
+            
+        await asyncio.gather(*responses)
+
+    responsesData = [pd.DataFrame(json.loads(response.result())) for response in responses]
+
+    return [dataframe['yhat'].iloc[-1] for dataframe in responsesData]
+
 @app.route('/trip', methods=['POST'])
-async def get_trip():
+def get_trip():
     bucket_name = "prediswiss-network"
     file_name = "network.parquet"
     fs_gcs = gcsfs.GCSFileSystem()
@@ -75,29 +200,7 @@ async def get_trip():
     filtered_df = df.fillna({'in_path': False})
     filtered_df = filtered_df[filtered_df['in_path'] == True]
 
-
-    url = "https://us-east1-prediswiss.cloudfunctions.net/predict"
-    headers = {
-        'Content-Type': 'application/json'
-    }
-
-    responses = []
-    async with aiohttp.ClientSession() as session:
-        for index, row in filtered_df.iterrows():
-            payload = {
-                "id": row['id'],
-                "time": int(data[1]),
-                "store": False
-            }
-            response = asyncio.ensure_future(make_request(session, url, payload, headers))
-            responses.append(response)
-            
-        await asyncio.gather(*responses)
-
-    responsesData = [pd.DataFrame(json.loads(response.result())) for response in responses]
-
-    #need to fix sending other data (this send df en texte (fait tout peter))
-    return [[dataframe['yhat'].iloc[-1] for dataframe in responsesData], filtered_df.to_json()]
+    return filtered_df.to_json()
 
 async def make_request(session, url, payload, headers):
     async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=540)) as response:
@@ -105,5 +208,5 @@ async def make_request(session, url, payload, headers):
 
 if __name__ == '__main__':
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(asyncio.ensure_future(get_trip()))
+    loop.run_until_complete(asyncio.ensure_future(get_trip_predict()))
     app.run()
