@@ -144,17 +144,43 @@ async def get_trip_predict():
         for value in data[0].values():
             payload = {
                 "id": value,
-                "time": int(data[1]),
+                "date": data[1],
+                "hour": data[2],
                 "store": False
             }
             response = asyncio.ensure_future(make_request(session, url, payload, headers))
             responses.append(response)
-            
+
         await asyncio.gather(*responses)
 
-    responsesData = [pd.DataFrame(json.loads(response.result())) for response in responses]
+    responsesData = [pd.DataFrame(json.loads(response.result())) if response.result() != "" else None for response in responses]
 
-    return [dataframe['yhat'].iloc[-1] for dataframe in responsesData]
+    time = None
+    predict = []
+
+    for dataframe in responsesData:
+        if dataframe is not None:
+            if 'ds' in dataframe.columns and len(dataframe['ds']) > 0:
+                print(dataframe['ds'].iloc[-1])
+                print(int(dataframe['ds'].iloc[-1]))
+                time = int(dataframe['ds'].iloc[-1])
+            if 'yhat' in dataframe.columns and len(dataframe['yhat']) > 0:
+                predict.append(dataframe['yhat'].iloc[-1])
+            else:
+                predict.append(-1)
+
+    result = {
+        "predict": predict,
+        "time": time
+    }
+
+    return result
+
+async def make_request(session, url, payload, headers):
+    async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=540)) as response:
+        response = await response.text()
+        print("Request finish")
+        return response
 
 @app.route('/trip', methods=['POST'])
 def get_trip():
@@ -200,13 +226,9 @@ def get_trip():
     filtered_df = df.fillna({'in_path': False})
     filtered_df = filtered_df[filtered_df['in_path'] == True]
 
-    return filtered_df.to_json()
-
-async def make_request(session, url, payload, headers):
-    async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=540)) as response:
-        return await response.text()    
+    return filtered_df.to_json()    
 
 if __name__ == '__main__':
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(asyncio.ensure_future(get_trip_predict()))
+    # loop = asyncio.get_event_loop()
+    # loop.run_until_complete(asyncio.ensure_future(get_trip_predict()))
     app.run()
