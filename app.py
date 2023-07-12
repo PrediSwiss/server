@@ -1,17 +1,13 @@
-from flask import Flask, jsonify, request
+from flask import Flask, request
 from flask_cors import CORS
 import gcsfs
 import pandas as pd
 import pyarrow.parquet as pq
-import requests
 from geopy.distance import geodesic
 import asyncio
 import aiohttp
 import json
 import xml.etree.ElementTree as ET
-
-
-# flask run --port=5001 --debug
 
 # instantiate the app
 app = Flask(__name__)
@@ -20,11 +16,12 @@ app.config.from_object(__name__)
 # enable CORS
 CORS(app, resources={r'/*': {'origins': '*'}})
 
-# sanity check route
 @app.route('/counter', methods=['GET'])
 def get_counter():
     bucket_name = "prediswiss-network"
     file_name = "network.parquet"
+
+    # We collect teh counter data
     fs_gcs = gcsfs.GCSFileSystem()
     path = bucket_name + "/" + file_name
     table = pq.read_table(path, filesystem=fs_gcs)
@@ -36,9 +33,12 @@ def get_counter():
 def get_current():
     bucket_name = "prediswiss-raw-data"
     fs_gcs = gcsfs.GCSFileSystem()
+
+    # Use the last file updated
     lastFolder = fs_gcs.ls(bucket_name)[-1]
     lastFile = fs_gcs.ls(lastFolder)[-1]
 
+    # Parse the data from xml to a Dataframe
     content = None
     with fs_gcs.open(lastFile, 'r') as file:
         content = file.read()
@@ -139,6 +139,7 @@ async def get_trip_predict():
         'Content-Type': 'application/json'
     }
 
+    # Launch a request asnychronous for each id
     responses = []
     async with aiohttp.ClientSession() as session:
         for value in data[0].values():
@@ -158,6 +159,7 @@ async def get_trip_predict():
     time = None
     predict = []
 
+    # Restrict the data for the return
     for dataframe in responsesData:
         if dataframe is not None:
             if 'ds' in dataframe.columns and len(dataframe['ds']) > 0:
@@ -176,11 +178,10 @@ async def get_trip_predict():
 
     return result
 
+# Launch a request and wait for the response
 async def make_request(session, url, payload, headers):
     async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=540)) as response:
-        response = await response.text()
-        print("Request finish")
-        return response
+        return await response.text()
 
 @app.route('/trip', methods=['POST'])
 def get_trip():
@@ -196,6 +197,7 @@ def get_trip():
 
     data = request.json
 
+    # Restrict the search zone
     max_lat = min_lat = data[0][0]['lat']
     max_lng = min_lng = data[0][0]['lng']
 
@@ -207,7 +209,7 @@ def get_trip():
         min_lng = min(min_lng, item['lng'])
 
     # Apply the threshold of 5 meters
-    threshold = 0.00045  # Approximately 5 meters in latitude or longitude
+    threshold = 0.00045  # Approximately 50 meters in latitude or longitude
     max_lat += threshold
     min_lat -= threshold
     max_lng += threshold
@@ -216,7 +218,8 @@ def get_trip():
     # Restrict the dataframe based on the bounds
     restricted_df = df[
         (df['lat'].between(min_lat, max_lat)) &
-        (df['long'].between(min_lng, max_lng))
+        (df['long'].between(min_lng, max_lng)) &
+        (df['id'].str.startswith('CH:'))
     ]
 
     # Assign in_path values
@@ -229,6 +232,4 @@ def get_trip():
     return filtered_df.to_json()    
 
 if __name__ == '__main__':
-    # loop = asyncio.get_event_loop()
-    # loop.run_until_complete(asyncio.ensure_future(get_trip_predict()))
     app.run()
