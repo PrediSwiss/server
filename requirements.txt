@@ -1,0 +1,11 @@
+flask
+flask_cors
+pyarrow
+gcsfs
+pandas
+geopy
+asyncio
+aiohttp
+flask[async]
+google-cloud-storage
+pytest
